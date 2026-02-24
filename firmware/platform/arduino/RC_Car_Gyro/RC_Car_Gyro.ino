@@ -15,6 +15,7 @@
  *
  * Software/Libraries:
  *  - Wire.h
+*   - STM32Servo
  *
  * Credits/References:
  *
@@ -27,23 +28,50 @@
 //========================================================================================================================//
 
 #include <Wire.h>
+#include <Servo.h>
 
 //========================================================================================================================//
 //                                                 Defines                                                                //                                                                 
 //========================================================================================================================//
 
 #define MPU 0x68
-#define SCL_PIN PB6
-#define SDA_PIN PB7
 
 //========================================================================================================================//
 //                                                 Global Variables                                                       //                                                                 
 //========================================================================================================================//
 
-float X_Rate, Y_Rate, Z_Rate;
-int RateCalibrationNumber;
-float X_Rate_Calibration, Y_Rate_Calibration, Z_Rate_Calibration;
+const int ch1Pin = PA12;
+const int ch2Pin = PA11;
+const int ch3Pin = PA10;
+const int ch4Pin = PA9;
+const int ch5Pin = PA8;
 
+const int servoPin = PB3;
+const int escPin = PB10;
+
+const float sampleTime = 0.004;
+
+uint32_t currentTime, previousTime;
+uint loopTimer;
+
+float X_Rate, Y_Rate, Z_Rate;
+float X_Rate_Calibration, Y_Rate_Calibration, Z_Rate_Calibration;
+int RateCalibrationNumber;
+
+volatile uint32_t rising_edge_start_1, rising_edge_start_2, rising_edge_start_3, rising_edge_start_4; // time when pwm signal rises
+volatile uint32_t channel_1_pulsewidth, channel_2_pulsewidth, channel_3_pulsewidth, channel_4_pulsewidth;
+
+float DesiredYaw;
+float ErrorYaw;
+float inputYaw;
+float PrevErrorYaw = 0;
+float PrevItermYaw = 0;
+
+const int KpYaw = 2;
+const int KiYaw = 12;
+const int KdYaw = 0;
+
+Servo steeringServo;
 
 //========================================================================================================================//
 //                                                 Function prototypes                                                    //                                                                 
@@ -52,21 +80,51 @@ float X_Rate_Calibration, Y_Rate_Calibration, Z_Rate_Calibration;
 void Init_Gyro();
 void Gyro_Calibration();
 void Get_Gyro_Data();
+int32_t getRadioPWM(int channel_number);
 
 //========================================================================================================================//
 //                                                      Setup                                                             //                                                                 
 //========================================================================================================================//
 
 void setup() {
-  // Initialize Serial Monitor
-  Serial.begin(115200);
-  delay(2000);
-  Serial.println("Connected ready to print");
-  
+  // Set channel pin pull up
+  pinMode(ch1Pin, INPUT_PULLUP);
+  pinMode(ch2Pin, INPUT_PULLUP);
+  pinMode(ch3Pin, INPUT_PULLUP);
+  pinMode(ch4Pin, INPUT_PULLUP);
+  pinMode(ch5Pin, INPUT_PULLUP);
+
   // Initialize Gyro and run calibration
   Init_Gyro();
   Gyro_Calibration();
+
+  steeringServo.attach(PB3);
+  steeringServo.write(90);
+
+  // interupt on pin with ISR on mode Change pwm rising edge
+  attachInterrupt(digitalPinToInterrupt(ch1Pin), getCh1, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(ch2Pin), getCh2, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(ch3Pin), getCh3, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(ch4Pin), getCh4, CHANGE);
+  delay(250);
+
+
+  int32_t ch3 = getRadioPWM(3);
+  
+  // Check if the throttle is inbetween 1020 OR 1050
+  // if its under 1020 the while loop is true and dont exit it ensures it is not reading a fault in the receiver
+  // if its above 1050 the loop is true and it ensures the throttle stick is high
+
+  /*
+  while (ch3 < 1050 || ch3 > 1100) {
+    delay(4);
+    ch3 = getRadioPWM(3);
+  }
+  */
+
+  loopTimer=micros();
 }
+
 
 //========================================================================================================================//
 //                                                        Loop                                                            //                                                                 
@@ -79,15 +137,16 @@ void loop() {
   Y_Rate -= Y_Rate_Calibration;
   Z_Rate -= Z_Rate_Calibration;
 
-  Serial.print("X_Rate:   ");
-  Serial.print(X_Rate);
-  Serial.print("    Y_Rate:   ");
-  Serial.print(Y_Rate);
-  Serial.print("    Z_Rate:   ");
-  Serial.println(Z_Rate);
+  steeringServo.write(0);
+  delay(1000);
+  steeringServo.write(90);
+  delay(1000);
+  steeringServo.write(180);
+  delay(1000);
 
-  // 20 ms delay
-  delay(20);
+  
+  //while (micros() - loopTimer < 4000);  // 250 Hz T = 0.004s loop
+  //loopTimer=micros();
 }
 
 //========================================================================================================================//
@@ -157,4 +216,85 @@ void Get_Gyro_Data () {
   X_Rate = (float)raw_X_Rate/65.5;
   Y_Rate = (float)raw_Y_Rate/65.5;
   Z_Rate = (float)raw_Z_Rate/65.5;
+}
+
+void PID_Yaw() {
+  // Local variables
+  float u = 0;
+  float Pterm = KpYaw * ErrorYaw;
+  float Iterm = PrevItermYaw + (KiYaw * ErrorYaw * sampleTime);
+  if (Iterm > 400) Iterm = 400;
+  if (Iterm < -400) Iterm = -400;
+  float Dterm = KdYaw * ((ErrorYaw - PrevErrorYaw)/sampleTime);
+  float PID_Output = Pterm + Iterm + Dterm;
+  u = PID_Output;
+  inputYaw = u;
+  PrevItermYaw = Iterm;
+  PrevErrorYaw = ErrorYaw;
+}
+
+//========================================================================================================================//
+//                            Get current radio commands from interrupt routines                                          //                                                                 
+//========================================================================================================================//
+
+int32_t getRadioPWM(int channel_number) {
+  int32_t returnPWM = 0; // Initialize variabel
+  if (channel_number == 1) {
+    returnPWM = channel_1_pulsewidth;
+  }
+  else if (channel_number == 2) {
+    returnPWM = channel_2_pulsewidth;
+  }
+  else if (channel_number == 3) {
+    returnPWM = channel_3_pulsewidth;
+  }
+  else if (channel_number == 4) {
+    returnPWM = channel_4_pulsewidth;
+  }
+  return returnPWM;
+}
+
+
+//========================================================================================================================//
+//                                                 INTERRUPT HANDLERS                                                     //                                                                 
+//========================================================================================================================//
+
+void getCh1 () {
+  int state = digitalRead(ch1Pin);
+  if (state == HIGH) {
+    rising_edge_start_1 = micros();
+  }
+  else {
+    channel_1_pulsewidth = micros() - rising_edge_start_1;
+  }
+}
+
+void getCh2 () {
+  int state = digitalRead(ch2Pin);
+  if (state == HIGH) {
+    rising_edge_start_2 = micros();
+  }
+  else {
+    channel_2_pulsewidth = micros() - rising_edge_start_2;
+  }
+}
+
+void getCh3 () {
+  int state = digitalRead(ch3Pin);
+  if (state == HIGH) {
+    rising_edge_start_3 = micros();
+  }
+  else {
+    channel_3_pulsewidth = micros() - rising_edge_start_3;
+  }
+}
+
+void getCh4 () {
+  int state = digitalRead(ch4Pin);
+  if (state == HIGH) {
+    rising_edge_start_4 = micros();
+  }
+  else {
+    channel_4_pulsewidth = micros() - rising_edge_start_4;
+  }
 }
