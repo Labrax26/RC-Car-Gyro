@@ -1,6 +1,6 @@
 //Project Title: Car Gyro
 //Author: Daan Smit
-//Date: 24-2-2026
+//Date: 26-2-2026
 //Version: 1
 
  /* Description:
@@ -67,8 +67,8 @@ float inputYaw;
 float PrevErrorYaw = 0;
 float PrevItermYaw = 0;
 
-const int KpYaw = 2;
-const int KiYaw = 12;
+const int KpYaw = 5;
+const int KiYaw = 0;
 const int KdYaw = 0;
 
 Servo steeringServo;
@@ -80,6 +80,8 @@ Servo steeringServo;
 void Init_Gyro();
 void Gyro_Calibration();
 void Get_Gyro_Data();
+void DesiredRate();
+void Error_Calculation();
 int32_t getRadioPWM(int channel_number);
 
 //========================================================================================================================//
@@ -87,6 +89,10 @@ int32_t getRadioPWM(int channel_number);
 //========================================================================================================================//
 
 void setup() {
+  Serial.begin(115200);
+  delay(2000);
+  Serial.println("Connected ready to print");
+
   // Set channel pin pull up
   pinMode(ch1Pin, INPUT_PULLUP);
   pinMode(ch2Pin, INPUT_PULLUP);
@@ -99,7 +105,7 @@ void setup() {
   Gyro_Calibration();
 
   steeringServo.attach(PB3);
-  steeringServo.write(90);
+  steeringServo.writeMicroseconds(1500);  // Center position using 1500 uS
 
   // interupt on pin with ISR on mode Change pwm rising edge
   attachInterrupt(digitalPinToInterrupt(ch1Pin), getCh1, CHANGE);
@@ -114,13 +120,11 @@ void setup() {
   // Check if the throttle is inbetween 1020 OR 1050
   // if its under 1020 the while loop is true and dont exit it ensures it is not reading a fault in the receiver
   // if its above 1050 the loop is true and it ensures the throttle stick is high
-
-  /*
   while (ch3 < 1050 || ch3 > 1100) {
     delay(4);
     ch3 = getRadioPWM(3);
   }
-  */
+  
 
   loopTimer=micros();
 }
@@ -137,16 +141,16 @@ void loop() {
   Y_Rate -= Y_Rate_Calibration;
   Z_Rate -= Z_Rate_Calibration;
 
-  steeringServo.write(0);
-  delay(1000);
-  steeringServo.write(90);
-  delay(1000);
-  steeringServo.write(180);
-  delay(1000);
 
-  
-  //while (micros() - loopTimer < 4000);  // 250 Hz T = 0.004s loop
-  //loopTimer=micros();
+  // Call the PID functions
+  DesiredRate();
+  Error_Calculation();
+  PID_Yaw();
+
+  steeringServo.writeMicroseconds(inputYaw);
+
+  while (micros() - loopTimer < 4000);  // 250 Hz T = 0.004s loop
+  loopTimer=micros();
 }
 
 //========================================================================================================================//
@@ -218,6 +222,27 @@ void Get_Gyro_Data () {
   Z_Rate = (float)raw_Z_Rate/65.5;
 }
 
+//========================================================================================================================//
+//                                                 Function DesiredRate                                                   //                                                                 
+//========================================================================================================================//
+
+void DesiredRate () {
+  int32_t ch1 = getRadioPWM(4);
+  DesiredYaw = 0.4*(ch1-1500);
+}
+
+//========================================================================================================================//
+//                                                 Function Error_Calculation                                             //                                                                 
+//========================================================================================================================//
+
+void Error_Calculation() {
+  ErrorYaw = DesiredYaw - Z_Rate;
+}
+
+//========================================================================================================================//
+//                                                  Function PID_Yaw                                                      //                                                                 
+//========================================================================================================================//
+
 void PID_Yaw() {
   // Local variables
   float u = 0;
@@ -231,6 +256,7 @@ void PID_Yaw() {
   inputYaw = u;
   PrevItermYaw = Iterm;
   PrevErrorYaw = ErrorYaw;
+  inputYaw = constrain(PID_Output, -500, 500) + 1500;
 }
 
 //========================================================================================================================//
