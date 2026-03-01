@@ -67,11 +67,12 @@ float inputYaw;
 float PrevErrorYaw = 0;
 float PrevItermYaw = 0;
 
-const int KpYaw = 5;
+const int KpYaw = 2;
 const int KiYaw = 0;
 const int KdYaw = 0;
 
 Servo steeringServo;
+Servo motorControl;
 
 //========================================================================================================================//
 //                                                 Function prototypes                                                    //                                                                 
@@ -106,6 +107,8 @@ void setup() {
 
   steeringServo.attach(PB3);
   steeringServo.writeMicroseconds(1500);  // Center position using 1500 uS
+
+  motorControl.attach(PB10);
 
   // interupt on pin with ISR on mode Change pwm rising edge
   attachInterrupt(digitalPinToInterrupt(ch1Pin), getCh1, CHANGE);
@@ -146,8 +149,13 @@ void loop() {
   DesiredRate();
   Error_Calculation();
   PID_Yaw();
-
   steeringServo.writeMicroseconds(inputYaw);
+
+  int32_t ch3 = getRadioPWM(3);
+  ch3 = constrain(ch3, 1000, 2000);
+  motorControl.writeMicroseconds(ch3);
+
+
 
   while (micros() - loopTimer < 4000);  // 250 Hz T = 0.004s loop
   loopTimer=micros();
@@ -227,7 +235,7 @@ void Get_Gyro_Data () {
 //========================================================================================================================//
 
 void DesiredRate () {
-  int32_t ch1 = getRadioPWM(4);
+  int32_t ch1 = getRadioPWM(1);
   DesiredYaw = 0.4*(ch1-1500);
 }
 
